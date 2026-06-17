@@ -62,7 +62,6 @@ def render_dashboard():
     try:
         name, market_cap = get_company_info(code)
         
-        # UI 레이아웃
         col_title, col_fav = st.columns([8, 2])
         with col_title: st.subheader(f"🏢 {name} ({code})")
         with col_fav:
@@ -73,15 +72,24 @@ def render_dashboard():
                 else: st.toast("⚠️ 최대 6개까지 가능합니다.", icon="⚠️")
                 st.rerun()
         
+        # 한국 시간으로 갱신 시간 표시
+        kst = pytz.timezone('Asia/Seoul')
+        now_kst = datetime.datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
+        st.caption(f"⏱️ 마지막 갱신 (한국시간): {now_kst}")
         if st.button("🔄 정보만 갱신"): st.rerun()
 
         # 데이터 처리
         df_5m = get_stock_history(code)
         if df_5m.empty: return
         df_5m.ffill(inplace=True)
+        
+        # 10분봉 합성
         df_10m = df_5m.resample('10min', label='right', closed='right').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
 
-        # 지표
+        # 🚨 [핵심] 차트 시간을 한국 시간(KST)으로 변환
+        df_10m.index = df_10m.index.tz_convert('Asia/Seoul')
+
+        # 지표 계산
         delta = df_10m['Close'].diff()
         df_10m['RSI'] = 100 - (100 / (1 + (delta.clip(lower=0).rolling(14).mean() / -delta.clip(upper=0).rolling(14).mean())))
         L12, H12 = df_10m['Low'].rolling(12).min(), df_10m['High'].rolling(12).max()
@@ -91,9 +99,9 @@ def render_dashboard():
         df_10m['Buy'] = (df_10m['SlowK'] <= 30) & (df_10m['SlowK'].shift(1) <= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] > df_10m['SlowD']) & (df_10m['RSI'] <= 45)
         df_10m['Sell'] = (df_10m['SlowK'] >= 70) & (df_10m['SlowK'].shift(1) >= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] < df_10m['SlowD'])
 
-        # Plotly 차트 (수정 완료: mode='lines' 명시 및 색상 변경)
+        # Plotly 차트 (선 굵기 보강)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_10m.index, y=df_10m['Close'], name='주가', mode='lines', line=dict(color='#00FFFF', width=2)))
+        fig.add_trace(go.Scatter(x=df_10m.index, y=df_10m['Close'], name='주가', mode='lines', line=dict(color='#00FFFF', width=2.5)))
         
         b = df_10m[df_10m['Buy']]
         s = df_10m[df_10m['Sell']]
