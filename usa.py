@@ -4,58 +4,53 @@ import pandas as pd
 import datetime
 import pytz
 import requests
+import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 
-# 💱 1. 실시간 환율 캐싱 (10분 유지)
+# 캐싱 설정
 @st.cache_data(ttl=600)
 def get_exchange_rate():
     try:
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         data = requests.get(url).json()
         return data['rates']['KRW']
-    except:
-        return 1400.0
+    except: return 1400.0
 
-# 🏢 2. 종목 정보 캐싱 (1시간 유지) -> Rate Limit 방어 1단계
 @st.cache_data(ttl=3600)
 def get_company_info(code):
     try:
         tk = yf.Ticker(code)
         info = tk.info
-        name = info.get('shortName', info.get('longName', code))
-        cap = info.get('marketCap', 0)
-        return name, cap
-    except:
-        return code, 0
+        return info.get('shortName', info.get('longName', code)), info.get('marketCap', 0)
+    except: return code, 0
 
-# 📈 3. 차트 데이터 캐싱 (1분 유지) -> Rate Limit 완벽 차단!
 @st.cache_data(ttl=60)
 def get_stock_history(code):
     try:
         tk = yf.Ticker(code)
-        df = tk.history(period="5d", interval="5m")
-        return df
-    except:
-        return pd.DataFrame()
+        return tk.history(period="5d", interval="5m")
+    except: return pd.DataFrame()
 
-# 💾 새로고침 방어용 세션 고정
+# 세션 세팅
 if "current_stock" not in st.session_state: st.session_state.current_stock = ""
-if "code" in st.query_params: st.session_state.current_stock = st.query_params["code"]
-if "search_box" not in st.session_state: st.session_state.search_box = ""
+if "favorites" not in st.session_state: st.session_state.favorites = [] # 관심종목 리스트
 
-# 🚨 [오류 해결 핵심] 서버가 검색창을 못 찾아도 에러 안 나게 get() 안전장치 적용
 def handle_search():
     input_val = st.session_state.get("search_box", "").strip().upper()
     if input_val:
         st.session_state.current_stock = input_val
-        st.query_params["code"] = input_val 
     st.session_state.search_box = ""
+
+# 👈 [사이드바] 관심종목 리스트
+st.sidebar.title("⭐ 관심 종목 (최대 6개)")
+for fav in st.session_state.favorites:
+    if st.sidebar.button(f"🔍 {fav}"):
+        st.session_state.current_stock = fav
+        st.rerun()
 
 st.title("🇺🇸 미국장 10분봉 필승 화살표 검색기")
 st.text_input("미국 주식 티커 입력 후 엔터 (예: AAPL, TSLA)", key="search_box", on_change=handle_search)
-
-st.write("---")
 
 @st.fragment
 def render_dashboard():
@@ -63,92 +58,67 @@ def render_dashboard():
     if not code: return
         
     try:
-        # 안전하게 캐싱된 함수들로 데이터 호출
         name, market_cap = get_company_info(code)
         
-        col_title, col_btn = st.columns([8, 2])
+        # 북마크 로직
+        col_title, col_btn, col_fav = st.columns([6, 2, 2])
         with col_title:
             st.subheader(f"🏢 {name} ({code})")
-            st.caption(f"⏱️ 마지막 데이터 갱신: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        with col_btn:
-            if st.button("🔄 정보만 갱신"): st.rerun() 
+        with col_fav:
+            is_fav = code in st.session_state.favorites
+            if st.button("⭐ 북마크 해제" if is_fav else "☆ 북마크 추가"):
+                if is_fav: st.session_state.favorites.remove(code)
+                elif len(st.session_state.favorites) < 6: st.session_state.favorites.append(code)
+                else: st.error("최대 6개까지만 가능합니다!")
+                st.rerun()
+        
+        st.caption(f"⏱️ 마지막 갱신: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 
-        # 1분 동안은 야후 서버를 찌르지 않고 메모리에서 가져옴 (에러 방지)
         df_5m = get_stock_history(code)
-        if df_5m.empty:
-            st.warning("데이터를 불러올 수 없습니다. 티커가 잘못되었거나 서버 지연입니다.")
-            return
-            
-        # NaN 에러 방지용 ffill 추가 후 최신 10min 문법으로 합성
+        if df_5m.empty: return
         df_5m.ffill(inplace=True)
-        df_10m = df_5m.resample('10min', label='right', closed='right').agg({
-            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-        }).dropna()
+        df_10m = df_5m.resample('10min', label='right', closed='right').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
 
         # 지표 계산
         delta = df_10m['Close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-        rs = gain / loss
-        df_10m['RSI'] = 100 - (100 / (1 + rs))
+        df_10m['RSI'] = 100 - (100 / (1 + (delta.clip(lower=0).rolling(14).mean() / -delta.clip(upper=0).rolling(14).mean())))
+        L12, H12 = df_10m['Low'].rolling(12).min(), df_10m['High'].rolling(12).max()
+        df_10m['K'] = 100 * ((df_10m['Close'] - L12) / (H12 - L12))
+        df_10m['SlowK'] = df_10m['K'].rolling(5).mean()
+        df_10m['SlowD'] = df_10m['SlowK'].rolling(5).mean()
         
-        L12 = df_10m['Low'].rolling(window=12).min()
-        H12 = df_10m['High'].rolling(window=12).max()
-        df_10m['Fast_%K'] = 100 * ((df_10m['Close'] - L12) / (H12 - L12))
-        df_10m['Slow_%K'] = df_10m['Fast_%K'].rolling(window=5).mean()
-        df_10m['Slow_%D'] = df_10m['Slow_%K'].rolling(window=5).mean()
-        df_10m.dropna(inplace=True)
+        # 화살표 조건
+        df_10m['Buy'] = (df_10m['SlowK'] <= 30) & (df_10m['SlowK'].shift(1) <= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] > df_10m['SlowD']) & (df_10m['RSI'] <= 45)
+        df_10m['Sell'] = (df_10m['SlowK'] >= 70) & (df_10m['SlowK'].shift(1) >= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] < df_10m['SlowD'])
 
-        last_candle = df_10m.iloc[-1]
-        prev_candle = df_10m.iloc[-2]
-        cur_price = float(last_candle['Close'])
-        cur_vol = float(last_candle['Volume'])
-        cur_rsi = float(last_candle['RSI'])
-        cur_k = float(last_candle['Slow_%K'])
-        cur_d = float(last_candle['Slow_%D'])
-        prev_k = float(prev_candle['Slow_%K'])
-        prev_d = float(prev_candle['Slow_%D'])
-        stop_loss = float(prev_candle['Low'])
+        # Plotly 차트 (화살표 자동 표시)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_10m.index, y=df_10m['Close'], name='주가', line=dict(color='white', width=1)))
         
-        # 매매 알고리즘 및 필터링
-        us_tz = pytz.timezone('US/Eastern')
-        now_us = datetime.datetime.now(us_tz)
-        is_opening_9_mins = (now_us.time() >= datetime.time(9, 30)) and (now_us.time() < datetime.time(9, 40))
-        is_buy_signal = (cur_k <= 30) and (prev_k <= prev_d) and (cur_k > cur_d) and (cur_rsi <= 45)
-        is_sell_signal = (cur_k >= 70) and (prev_k >= prev_d) and (cur_k < cur_d)
+        # 매수/매도 화살표
+        buy_data = df_10m[df_10m['Buy']]
+        sell_data = df_10m[df_10m['Sell']]
         
-        # 하위권 종목은 에러가 아닌 '경고'로 처리
-        is_small_cap = (market_cap < 10_000_000_000) or ((cur_vol * cur_price) < 5_000_000)
+        fig.add_trace(go.Scatter(x=buy_data.index, y=buy_data['Close'], mode='markers', name='매수신호', marker=dict(color='red', size=10, symbol='triangle-up')))
+        fig.add_trace(go.Scatter(x=sell_data.index, y=sell_data['Close'], mode='markers', name='매도신호', marker=dict(color='blue', size=10, symbol='triangle-down')))
+        
+        fig.update_layout(template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0), height=400)
+        st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### 🎯 10분봉 화살표 알고리즘 결과")
-        
-        if is_opening_9_mins:
-            st.warning("⏳ **[시간 제어 가동]** 장 시작 후 9분간은 뇌동매매 방지를 위해 대기(Hold)합니다.")
-        else:
-            if is_small_cap:
-                st.warning("⚠️ **[주의]** 중소형주입니다. 변동성이 크니 손절가를 칼같이 지키세요.")
-            
-            if is_buy_signal:
-                st.error("## 🟥 [매수 포착] 빨간색 화살표 발생! 🟥")
-                st.info(f"**전략:** 30~50% 이분할 매수 / **손절 라인:** 직전 10분봉 최저가 **${stop_loss:.2f}**")
-            elif is_sell_signal:
-                st.info("## 🟦 [매도 포착] 파란색 고점 화살표 발생! 🟦")
-                st.warning("**전략:** 과열권 데드크로스 발생. 분할 익절하세요.")
-            else:
-                st.success("## ⚪ [대기] 발생한 화살표가 없습니다.")
+        # 요약 결과 출력
+        last = df_10m.iloc[-1]
+        st.write("### 🎯 현재 신호")
+        if last['Buy']: st.error("🟥 [매수 포착] 지금 진입 구간입니다!")
+        elif last['Sell']: st.info("🟦 [매도 포착] 지금 매도 구간입니다!")
+        else: st.success("⚪ [대기] 신호 없음")
 
-        st.write("---")
-        
-        # 환율 표시
+        # 환율 및 매매가
         krw = get_exchange_rate()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("현재가", f"${cur_price:.2f}", f"{int(cur_price*krw):,}원", delta_color="off")
-        col2.metric("단기 목표 (+1.5%)", f"${cur_price*1.015:.2f}", f"{int(cur_price*1.015*krw):,}원", delta_color="off")
-        col3.metric("🛡️ 손절가", f"${stop_loss:.2f}", f"{int(stop_loss*krw):,}원", delta_color="off")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("현재가", f"${last['Close']:.2f}", f"{int(last['Close']*krw):,}원")
+        c2.metric("목표가", f"${last['Close']*1.015:.2f}", f"{int(last['Close']*1.015*krw):,}원")
+        c3.metric("손절가", f"${df_10m.iloc[-2]['Low']:.2f}", f"{int(df_10m.iloc[-2]['Low']*krw):,}원")
 
-        st.line_chart(df_10m['Close'])
-
-    except Exception as e:
-        st.error(f"분석 오류: {e}")
+    except Exception as e: st.error(f"오류: {e}")
 
 render_dashboard()
