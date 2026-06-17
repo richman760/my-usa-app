@@ -29,7 +29,7 @@ def get_company_info(code):
     except:
         return code, 0
 
-# 📈 3. [오류 해결 핵심] 차트 데이터 캐싱 (1분 유지) -> Rate Limit 완벽 차단!
+# 📈 3. 차트 데이터 캐싱 (1분 유지) -> Rate Limit 완벽 차단!
 @st.cache_data(ttl=60)
 def get_stock_history(code):
     try:
@@ -44,8 +44,9 @@ if "current_stock" not in st.session_state: st.session_state.current_stock = ""
 if "code" in st.query_params: st.session_state.current_stock = st.query_params["code"]
 if "search_box" not in st.session_state: st.session_state.search_box = ""
 
+# 🚨 [오류 해결 핵심] 서버가 검색창을 못 찾아도 에러 안 나게 get() 안전장치 적용
 def handle_search():
-    input_val = st.session_state.search_box.strip().upper()
+    input_val = st.session_state.get("search_box", "").strip().upper()
     if input_val:
         st.session_state.current_stock = input_val
         st.query_params["code"] = input_val 
@@ -78,9 +79,8 @@ def render_dashboard():
             st.warning("데이터를 불러올 수 없습니다. 티커가 잘못되었거나 서버 지연입니다.")
             return
             
-        # NaN 에러 방지용 ffill 추가 후 10분봉 합성
+        # NaN 에러 방지용 ffill 추가 후 최신 10min 문법으로 합성
         df_5m.ffill(inplace=True)
-        # 🚨 [수정 완료] '10T' -> '10min'으로 최신 파이썬 문법에 맞게 변경
         df_10m = df_5m.resample('10min', label='right', closed='right').agg({
             'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
         }).dropna()
@@ -117,7 +117,7 @@ def render_dashboard():
         is_buy_signal = (cur_k <= 30) and (prev_k <= prev_d) and (cur_k > cur_d) and (cur_rsi <= 45)
         is_sell_signal = (cur_k >= 70) and (prev_k >= prev_d) and (cur_k < cur_d)
         
-        # 하위권 종목은 에러가 아닌 '경고'로 처리 (형의 요청 반영)
+        # 하위권 종목은 에러가 아닌 '경고'로 처리
         is_small_cap = (market_cap < 10_000_000_000) or ((cur_vol * cur_price) < 5_000_000)
 
         st.markdown("### 🎯 10분봉 화살표 알고리즘 결과")
