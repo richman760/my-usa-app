@@ -69,7 +69,10 @@ def render_dashboard():
             if st.button("⭐ 북마크 해제" if is_fav else "☆ 북마크 추가"):
                 if is_fav: st.session_state.favorites.remove(code)
                 elif len(st.session_state.favorites) < 6: st.session_state.favorites.append(code)
-                else: st.error("최대 6개까지만 가능합니다!")
+                # 기존: st.error("최대 6개까지만 가능합니다!")
+        
+        # 수정 후: st.toast로 변경
+        else: st.toast("⚠️ 최대 6개까지만 즐겨찾기 가능합니다.", icon="⚠️")
                 st.rerun()
         
         st.caption(f"⏱️ 마지막 갱신: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
