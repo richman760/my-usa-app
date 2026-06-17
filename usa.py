@@ -80,7 +80,8 @@ def render_dashboard():
             
         # NaN 에러 방지용 ffill 추가 후 10분봉 합성
         df_5m.ffill(inplace=True)
-        df_10m = df_5m.resample('10T', label='right', closed='right').agg({
+        # 🚨 [수정 완료] '10T' -> '10min'으로 최신 파이썬 문법에 맞게 변경
+        df_10m = df_5m.resample('10min', label='right', closed='right').agg({
             'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
         }).dropna()
 
