@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 
-# 1. 캐싱 설정 (서버 차단 방지 및 속도 최적화)
+# 1. 캐싱 설정
 @st.cache_data(ttl=600)
 def get_exchange_rate():
     try:
@@ -32,21 +32,20 @@ def get_stock_history(code):
         return tk.history(period="5d", interval="5m")
     except: return pd.DataFrame()
 
-# 2. 세션 상태 초기화
+# 2. 세션 초기화
 if "current_stock" not in st.session_state: st.session_state.current_stock = ""
 if "favorites" not in st.session_state: st.session_state.favorites = []
-if "search_box" not in st.session_state: st.session_state.search_box = ""
 
 def handle_search():
-    input_val = st.session_state.get("search_box", "").strip().upper()
-    if input_val:
-        st.session_state.current_stock = input_val
-        st.query_params["code"] = input_val
+    val = st.session_state.get("search_box", "").strip().upper()
+    if val:
+        st.session_state.current_stock = val
+        st.query_params["code"] = val
     st.session_state.search_box = ""
 
-# 3. 사이드바 (관심종목)
+# 3. 사이드바
 st.sidebar.title("⭐ 관심 종목 (최대 6개)")
-for fav in st.session_state.favorites[:]: # 복사본으로 순회
+for fav in st.session_state.favorites[:]:
     if st.sidebar.button(f"🔍 {fav}"):
         st.session_state.current_stock = fav
         st.rerun()
@@ -54,7 +53,7 @@ for fav in st.session_state.favorites[:]: # 복사본으로 순회
 st.title("🇺🇸 미국장 10분봉 필승 화살표 검색기")
 st.text_input("미국 주식 티커 입력 후 엔터 (예: AAPL, TSLA)", key="search_box", on_change=handle_search)
 
-# 4. 화면 렌더링
+# 4. 대시보드 렌더링
 @st.fragment
 def render_dashboard():
     code = st.session_state.current_stock
@@ -63,26 +62,17 @@ def render_dashboard():
     try:
         name, market_cap = get_company_info(code)
         
-        # 상단 UI
+        # UI 레이아웃
         col_title, col_fav = st.columns([8, 2])
-        with col_title:
-            st.subheader(f"🏢 {name} ({code})")
+        with col_title: st.subheader(f"🏢 {name} ({code})")
         with col_fav:
             is_fav = code in st.session_state.favorites
             if st.button("⭐ 삭제" if is_fav else "☆ 추가"):
-                if is_fav:
-                    st.session_state.favorites.remove(code)
-                    st.toast("북마크에서 제거되었습니다.", icon="✅")
-                else:
-                    if len(st.session_state.favorites) < 6:
-                        if code not in st.session_state.favorites:
-                            st.session_state.favorites.append(code)
-                            st.toast("북마크에 추가되었습니다!", icon="⭐")
-                    else:
-                        st.toast("⚠️ 최대 6개까지만 가능합니다.", icon="⚠️")
+                if is_fav: st.session_state.favorites.remove(code)
+                elif len(st.session_state.favorites) < 6: st.session_state.favorites.append(code)
+                else: st.toast("⚠️ 최대 6개까지 가능합니다.", icon="⚠️")
                 st.rerun()
         
-        st.caption(f"⏱️ 마지막 갱신: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         if st.button("🔄 정보만 갱신"): st.rerun()
 
         # 데이터 처리
@@ -98,25 +88,26 @@ def render_dashboard():
         df_10m['SlowK'] = (100 * ((df_10m['Close'] - L12) / (H12 - L12))).rolling(5).mean()
         df_10m['SlowD'] = df_10m['SlowK'].rolling(5).mean()
         
-        # 신호
         df_10m['Buy'] = (df_10m['SlowK'] <= 30) & (df_10m['SlowK'].shift(1) <= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] > df_10m['SlowD']) & (df_10m['RSI'] <= 45)
         df_10m['Sell'] = (df_10m['SlowK'] >= 70) & (df_10m['SlowK'].shift(1) >= df_10m['SlowD'].shift(1)) & (df_10m['SlowK'] < df_10m['SlowD'])
 
-        # 차트
+        # Plotly 차트 (수정 완료: mode='lines' 명시 및 색상 변경)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_10m.index, y=df_10m['Close'], name='주가', line=dict(color='white', width=1)))
+        fig.add_trace(go.Scatter(x=df_10m.index, y=df_10m['Close'], name='주가', mode='lines', line=dict(color='#00FFFF', width=2)))
+        
         b = df_10m[df_10m['Buy']]
         s = df_10m[df_10m['Sell']]
-        fig.add_trace(go.Scatter(x=b.index, y=b['Close'], mode='markers', name='매수', marker=dict(color='red', size=10, symbol='triangle-up')))
-        fig.add_trace(go.Scatter(x=s.index, y=s['Close'], mode='markers', name='매도', marker=dict(color='blue', size=10, symbol='triangle-down')))
+        fig.add_trace(go.Scatter(x=b.index, y=b['Close'], mode='markers', name='매수', marker=dict(color='red', size=12, symbol='triangle-up')))
+        fig.add_trace(go.Scatter(x=s.index, y=s['Close'], mode='markers', name='매도', marker=dict(color='blue', size=12, symbol='triangle-down')))
+        
         fig.update_layout(template="plotly_dark", margin=dict(l=0,r=0,t=30,b=0), height=400)
         st.plotly_chart(fig, use_container_width=True)
 
         # 결과
         last = df_10m.iloc[-1]
-        is_small = (market_cap < 10_000_000_000) or ((last['Volume'] * last['Close']) < 5_000_000)
+        if (market_cap < 10_000_000_000) or ((last['Volume'] * last['Close']) < 5_000_000):
+            st.warning("⚠️ 중소형주 주의")
         
-        if is_small: st.warning("⚠️ 중소형주 주의")
         if last['Buy']: st.error("🟥 [매수 포착] 진입 구간!")
         elif last['Sell']: st.info("🟦 [매도 포착] 익절 구간!")
         else: st.success("⚪ 대기 중")
